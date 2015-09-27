@@ -1,0 +1,122 @@
+---
+title: "Practical Machine Learning - Course Project"
+author: "NJH"
+date: "September 25, 2015"
+output: html_document
+---
+
+### Executive Summary
+
+The [Weight Lifting Exercises Dataset][har] contains accelerometer data, collected via on-body sensors, to predict how well participants performed exercise activities. By using random forests, a predictive model can use this data to classify how the participants performed the exercises with >99% accuracy. Cross validation is used to select an optimal tunable parameter, `mtry`, for the random forest model.
+
+### Setting Up: Libraries
+
+We will be using the `caret` package to build our model, the `dplyr` package to select and filter the training and test data sets, and the `doMC` to register multiple cores to run in parallel.
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(cache=TRUE)
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(doMC))
+doMC::registerDoMC(cores=4) 
+```
+
+### Background
+
+Six young health participants were asked to perform one set of 10 repetitions of the unilateral dumbbell biceps curl in five different fashions:
+
+* Class A: Exactly to exercise specifications
+* Class B: Elbows thrown to the front
+* Class C: Dumbbell lifted only halfway
+* Class D: Dumbbell lowered only halfway
+* Class E: Hips thrown to the front
+
+Four sensors collected position and acceleration data from the participants' belts, arms, and forearms, and from the dumbbell. Based on this position and acceleration data, the class of each of the exercises should be able to be predicted.
+
+
+```{r project_dir, include=TRUE}
+proj_dir <- getwd()
+```
+
+### Downloading the data
+
+The training and testing data are downloaded from the source and read into data tables.
+
+```{r download_data, include = TRUE}
+training_filename <- "pml-training.csv"
+testing_filename <- "pml-testing.csv"
+training_destfile <- paste(proj_dir,training_filename,sep = "")
+testing_destfile <- paste(proj_dir,testing_filename,sep = "")
+
+if(!file.exists(training_destfile)) {
+    training_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(url = training_url, destfile = training_destfile, method = "curl")
+}
+if(!file.exists(testing_destfile)) {
+    testing_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(url = testing_url, destfile = testing_destfile, method = "curl")
+}
+
+training_tbl <- tbl_df(read.csv(file = training_destfile))
+testing_tbl <- tbl_df(read.csv(file = testing_destfile))
+
+```
+
+
+### Preprocessing
+
+```{r preprocess, include=TRUE}
+training_tbl$classe <- factor(training_tbl$classe)
+dim_training <- dim(training_tbl) 
+na_freq <- levels(as.factor(colSums(is.na(training_tbl))))
+num_na <- sum(colSums(is.na(training_tbl))==as.numeric(na_freq[2]))
+training_tbl <- select(training_tbl,which(colSums(is.na(training_tbl)) == 0))
+blank_freq <- levels(as.factor(colSums(training_tbl=="")))
+num_blank <- sum(colSums(training_tbl=="")==as.numeric(blank_freq[2]))
+training_tbl <- select(training_tbl,which(colSums(training_tbl == "") == 0))
+training_tbl <- select(training_tbl, -c(X,raw_timestamp_part_1,raw_timestamp_part_2,
+                                        cvtd_timestamp,new_window,num_window))
+```
+
+There are a total of `r dim_training[1]` observations for `r dim_training[2]` different variables. Upon examination of the data set, we see that `r num_na` of the `r dim_training[2]` variables have `r na_freq[2]` NA values, `r num_blank` variables have `r blank_freq[2]` blank values, while the remaining `r dim_training[2]-(num_na+num_blank)` variables have `r na_freq[1]` NA values and `r blank_freq[1]` blank values. We select only the the `r dim_training[2]-(num_na+num_blank)` variables containing `r na_freq[1]` NA values and `r blank_freq[1]` blank values to keep for the predicive model.
+
+From the remaining variables in the dataset, we remove `X` as it is just an index counting the observation. We also remove the `timestamp` and `window` variables as they are not in the spirit of the study -- the goal is to predict exercise quality from the accelerometer and position data from the on-body sensors, not the time at which the exercise was performed.
+
+
+### Model Building
+
+The random forests approach is used to build a predictive model. Random forests are accurate at the expense of longer time required to build the model, less transparency in the prediction method, and possible overfitting the data. To get an idea of the in-sample versus out-of-sample error, we can use cross-validation on the training set. The tunable parameter for random forests is `mtry`, or the number of variables randomly sampled as candidates at each split. For classification problems, the default for `mtry` is the square root of the number of predictors. We will use cross validation to compare models made with `mtry` values of 2, 4, and 6
+
+```{r kfold, include=TRUE}
+    set.seed(45654)
+    num_folds <- 3
+    tc <- trainControl(method="cv", number = num_folds)
+    tgrid <- expand.grid(mtry = c(2, 4, 6))
+    modFit <- train(classe ~ ., data = training_tbl, method = "rf",
+                    trControl = tc, tuneGrid = tgrid)
+   
+```
+
+We can examine the final model:
+
+```{r final_model, include = TRUE}
+    modFit$finalModel
+```
+
+Using cross validation, the final model opted to use an `mtry` parameter of `r modFit$finalModel$tuneValue$mtry`. The confusion matrix shows that nearly all training set elements get classified correctly.
+
+We can also plot the out-of-bag (OOB) error as a function of the number of trees to measure of the out-of-sample error.
+
+```{r OOB, include = TRUE}
+    plot(modFit$finalModel)
+```
+
+The OOB error, our measure of the out-of-sample error, appears to plateau before 100 trees, so building the model with `ntrees` of 500 was more than sufficient. The OOB error is less than 1 percent, so we expect the model to do fairly well on the testing set.
+
+Of course, all that is left is to save the model! We wouldn't want all that processing time to go to waste. After saving the model, we can use it on the testing set.
+
+```{r save_model, include = TRUE}
+    save(modFit, file = paste(proj_dir,"modFit.RData",sep = ""))
+```
+
+[har]: http://groupware.les.inf.puc-rio.br/har "Human Activity Recognition"
